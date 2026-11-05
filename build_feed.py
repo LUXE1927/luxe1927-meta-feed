@@ -11,7 +11,7 @@ from bs4 import BeautifulSoup
 
 BASE = "https://www.luxe1927.com"
 SITEMAP = BASE + "/sitemap.xml"
-MAX_PRODUCTS = 30  # ทดสอบ 30 รายการก่อน
+MAX_PRODUCTS = 30
 SIZES = {"S", "M", "L", "XL", "XXL"}
 
 session = requests.Session()
@@ -49,76 +49,94 @@ def get_sitemap_urls():
     return list(dict.fromkeys(urls))
 
 
-def find_product_schema(soup):
+def get_schema(soup):
+    def walk(obj):
+        if isinstance(obj, list):
+            for value in obj:
+                yield from walk(value)
+        elif isinstance(obj, dict):
+            types = obj.get("@type", [])
+            if isinstance(types, str):
+                types = [types]
+
+            if "Product" in types:
+                yield obj
+
+            if "@graph" in obj:
+                yield from walk(obj["@graph"])
+
     for script in soup.select('script[type="application/ld+json"]'):
         try:
             data = json.loads(script.string or script.get_text())
+            for product in walk(data):
+                return product
         except (ValueError, TypeError):
             continue
-
-        def walk(value):
-            if isinstance(value, list):
-                for part in value:
-                    yield from walk(part)
-            elif isinstance(value, dict):
-                types = value.get("@type", [])
-                if isinstance(types, str):
-                    types = [types]
-
-                if "Product" in types:
-                    yield value
-
-                if "@graph" in value:
-                    yield from walk(value["@graph"])
-
-        for product in walk(data):
-            return product
 
     return {}
 
 
+def get_meta(soup, key, attribute="property"):
+    element = soup.find("meta", attrs={attribute: key})
+    return element.get("content", "").strip() if element else ""
+
+
 def get_price(product):
     offers = product.get("offers", {})
+
     if isinstance(offers, list):
         offers = offers[0] if offers else {}
 
     if not isinstance(offers, dict):
         return None
 
-    currency = offers.get("priceCurrency", "THB")
-    if currency != "THB":
+    if offers.get("priceCurrency", "THB") != "THB":
         return None
 
-    # Use the highest displayed price in a price range.
-    # Do not advertise a conditional bank-transfer discount
-    # as the unconditional product price.
     price = offers.get("highPrice") or offers.get("price")
 
     try:
-        price = float(str(price).replace(",", ""))
-        return f"{price:.2f} THB" if price > 0 else None
+        value = float(str(price).replace(",", ""))
+        return f"{value:.2f} THB" if value > 0 else None
     except (ValueError, TypeError):
         return None
 
 
-def get_image(product, soup, url):
-    image = product.get("image")
+def get_description(soup, product, title):
+    candidates = [
+        get_meta(soup, "description", "name"),
+        get_meta(soup, "og:description"),
+        product.get("description", "")
+    ]
 
-    if isinstance(image, list):
-        image = image[0] if image else None
+    for candidate in candidates:
+        if not isinstance(candidate, str):
+            continue
 
-    if isinstance(image, dict):
-        image = image.get("url") or image.get("contentUrl")
+        description = BeautifulSoup(
+            candidate, "html.parser"
+        ).get_text(" ", strip=True)
 
-    if not image:
-        meta = soup.find("meta", property="og:image")
-        image = meta.get("content") if meta else None
+        description = re.sub(r"\s+", " ", description)
 
-    return urljoin(url, image) if isinstance(image, str) and image else ""
+        if not description:
+            continue
+
+        if re.fullmatch(
+            r"(โอน|เก็บเงินปลายทาง|ลด|ส่วนลด|COD|[\d\s.,฿-])+",
+            description,
+            flags=re.IGNORECASE
+        ):
+            continue
+
+        if len(description) >= 25:
+            return description[:5000]
+
+    return title
 
 
 def get_sizes(soup):
-    result = {}
+    sizes = {}
 
     for element in soup.select(".text-select-button-2"):
         size = element.get_text(" ", strip=True).upper()
@@ -133,11 +151,11 @@ def get_sizes(soup):
             or element.get("aria-disabled") == "true"
         )
 
-        result[size] = (
+        sizes[size] = (
             "out of stock" if disabled else "in stock"
         )
 
-    return result
+    return sizes
 
 
 def read_product(url):
@@ -145,22 +163,34 @@ def read_product(url):
     response.raise_for_status()
 
     soup = BeautifulSoup(response.text, "html.parser")
-    product = find_product_schema(soup)
+    product = get_schema(soup)
 
     if not product:
-        raise ValueError("Product schema not found")
+        raise ValueError("Product schema missing")
 
-    title = product.get("name", "").strip()
-    image = get_image(product, soup, url)
+    title = str(product.get("name") or "").strip()
+    if not title:
+        title = get_meta(soup, "og:title")
+
+    image = product.get("image")
+
+    if isinstance(image, list):
+        image = image[0] if image else ""
+
+    if isinstance(image, dict):
+        image = image.get("url") or image.get("contentUrl")
+
+    if not isinstance(image, str) or not image:
+        image = get_meta(soup, "og:image")
+
+    image = urljoin(url, image) if image else ""
+
     price = get_price(product)
     sizes = get_sizes(soup)
 
-    description = BeautifulSoup(
-        product.get("description") or title,
-        "html.parser"
-    ).get_text(" ", strip=True)
+    # Keep both numeric components of MakeWebEasy IDs.
+    match = re.search(r"/product/(\d+(?:-\d+)?)", url)
 
-    match = re.search(r"/product/(\d+)", url)
     if not match:
         raise ValueError("Product ID missing")
 
@@ -169,6 +199,8 @@ def read_product(url):
     if not title or not image or not price or not sizes:
         raise ValueError("Incomplete product data")
 
+    description = get_description(soup, product, title)
+
     rows = []
 
     for size, availability in sizes.items():
@@ -176,7 +208,7 @@ def read_product(url):
             "id": f"LUXE-{product_id}-{size}",
             "item_group_id": f"LUXE-{product_id}",
             "title": f"{title} - {size}",
-            "description": description[:5000],
+            "description": description,
             "availability": availability,
             "condition": "new",
             "price": price,
@@ -193,33 +225,55 @@ def main():
     urls = get_sitemap_urls()
     print(f"Product URLs in sitemap: {len(urls)}")
 
-    rows = []
-    errors = []
+    rows_by_id = {}
+    skipped = []
 
     for index, url in enumerate(urls[:MAX_PRODUCTS], 1):
         try:
             product_rows = read_product(url)
-            rows.extend(product_rows)
-            print(f"[{index}] OK: {url} ({len(product_rows)} sizes)")
+
+            for row in product_rows:
+                # Never output duplicate IDs.
+                if row["id"] in rows_by_id:
+                    previous = rows_by_id[row["id"]]
+
+                    if previous != row:
+                        raise ValueError(
+                            f"Conflicting duplicate ID: {row['id']}"
+                        )
+                else:
+                    rows_by_id[row["id"]] = row
+
+            print(
+                f"[{index}] OK: {url} "
+                f"({len(product_rows)} sizes)"
+            )
+
         except Exception as exc:
-            errors.append((url, str(exc)))
+            skipped.append((url, str(exc)))
             print(f"[{index}] SKIPPED: {url} - {exc}")
 
         time.sleep(0.3)
 
-    if not rows:
-        raise RuntimeError("No valid products. Feed not created.")
+    rows = list(rows_by_id.values())
 
-    with open("products.csv", "w", newline="", encoding="utf-8-sig") as file:
+    if not rows:
+        raise RuntimeError("No valid products found")
+
+    with open(
+        "products.csv", "w",
+        newline="", encoding="utf-8-sig"
+    ) as file:
         writer = csv.DictWriter(file, fieldnames=FIELDS)
         writer.writeheader()
         writer.writerows(rows)
 
-    print(f"CSV rows: {len(rows)}")
-    print(f"Skipped products: {len(errors)}")
+    print(f"Unique CSV rows: {len(rows)}")
+    print(f"Unique groups: {len(set(r['item_group_id'] for r in rows))}")
+    print(f"Skipped URLs: {len(skipped)}")
     print("Created products.csv")
 
-    for url, error in errors[:10]:
+    for url, error in skipped[:15]:
         print(f"REVIEW: {url} - {error}")
 
 
