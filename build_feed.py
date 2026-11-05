@@ -295,7 +295,7 @@ def main():
             print(f"[{index}] REVIEW: {exc}")
 
         finally:
-            time.sleep(0.3)
+            time.sleep(1.0)
 
     result = list(rows.values())
 
