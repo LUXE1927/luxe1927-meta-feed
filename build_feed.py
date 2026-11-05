@@ -12,7 +12,7 @@ from bs4 import BeautifulSoup
 
 BASE = "https://www.luxe1927.com"
 SITEMAP = BASE + "/sitemap.xml"
-MAX_URLS = 30  # ทดสอบก่อน ยังไม่เปิดทั้งร้าน
+MAX_URLS = 30  # คงจำนวนทดสอบไว้ก่อน
 
 SIZES = ("XXL", "XL", "L", "M", "S")
 
