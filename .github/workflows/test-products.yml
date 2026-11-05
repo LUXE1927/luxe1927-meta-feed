@@ -26,3 +26,10 @@ jobs:
 
       - name: Test product data
         run: python build_feed.py
+
+      - name: Upload Meta Product Feed
+        uses: actions/upload-artifact@v4
+        with:
+          name: luxe1927-meta-feed
+          path: products.csv
+          if-no-files-found: error
