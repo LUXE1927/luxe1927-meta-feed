@@ -1,14 +1,20 @@
 
-name: Test LUXE1927 Products
+name: LUXE1927 Automatic Product Feed
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: '0 23 * * *'
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: luxe1927-product-feed
+  cancel-in-progress: false
 
 jobs:
-  test:
+  update-feed:
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -24,10 +30,63 @@ jobs:
       - name: Install requirements
         run: pip install -r requirements.txt
 
-      - name: Test product data
+      - name: Generate latest product feed
         run: python build_feed.py
 
-      - name: Upload Meta Product Feed
+      - name: Validate product feed
+        run: |
+          python - <<'PY'
+          import csv
+          from pathlib import Path
+
+          path = Path("products.csv")
+          if not path.exists():
+              raise SystemExit("ERROR: products.csv not found")
+
+          with path.open(encoding="utf-8-sig", newline="") as f:
+              reader = csv.DictReader(f)
+              rows = list(reader)
+
+          required = {
+              "id", "title", "description", "availability",
+              "condition", "price", "link", "image_link"
+          }
+
+          missing = required - set(reader.fieldnames or [])
+          if missing:
+              raise SystemExit(f"ERROR: Missing columns: {missing}")
+
+          if not rows:
+              raise SystemExit("ERROR: Feed is empty")
+
+          ids = [row["id"] for row in rows]
+          if len(ids) != len(set(ids)):
+              raise SystemExit("ERROR: Duplicate product IDs")
+
+          valid_availability = {"in stock", "out of stock", "preorder"}
+          for row in rows:
+              if row["availability"] not in valid_availability:
+                  raise SystemExit(
+                      f"ERROR: Invalid availability for {row['id']}"
+                  )
+
+          print(f"VALIDATED: {len(rows)} product variants")
+          PY
+
+      - name: Publish updated CSV
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add products.csv
+
+          if git diff --cached --quiet; then
+            echo "No product changes"
+          else
+            git commit -m "Update LUXE1927 product feed"
+            git push
+          fi
+
+      - name: Save feed artifact
         uses: actions/upload-artifact@v4
         with:
           name: luxe1927-meta-feed
