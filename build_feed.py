@@ -3,6 +3,8 @@ import csv
 import json
 import re
 import time
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import xml.etree.ElementTree as ET
 from collections import Counter
 from urllib.parse import urljoin, urlparse
@@ -15,7 +17,7 @@ BASE = "https://www.luxe1927.com"
 SITEMAP = BASE + "/sitemap.xml"
 MAX_URLS = 0
 
-SIZES = ("XXL", "XL", "L", "M", "S")
+SIZES = ("XXL", "XL", "L", "M", "S", "FREE SIZE")
 
 FIELDS = [
     "id",
@@ -36,6 +38,17 @@ session.headers.update({
     "User-Agent": "Mozilla/5.0 (compatible; LUXE1927Catalog/1.0)",
     "Accept-Language": "th-TH,th;q=0.9,en;q=0.8",
 })
+
+# Retry transient server errors, but never retry a genuine 404.
+retry = Retry(
+    total=3,
+    backoff_factor=1.5,
+    status_forcelist=(429, 500, 502, 503, 504),
+    allowed_methods=frozenset(["GET"]),
+    respect_retry_after_header=True,
+)
+session.mount("https://", HTTPAdapter(max_retries=retry))
+session.mount("http://", HTTPAdapter(max_retries=retry))
 
 
 def fetch(url):
@@ -250,78 +263,72 @@ def get_price(product):
 
 
 def selected_variant(soup, product):
-    sku = str(
-        product.get("sku") or ""
-    ).strip().upper()
-
-    text = soup.get_text(
-        " ", strip=True
-    )
-
+    """Read the currently selected SKU and payment; no size selector means Free Size."""
+    sku = str(product.get("sku") or "").strip().upper()
+    text = soup.get_text(" ", strip=True)
     if not sku:
-        match = re.search(
-            r"\bSKU\s*:\s*([A-Za-z0-9_-]+)",
-            text,
-            flags=re.IGNORECASE,
-        )
-
-        if match:
-            sku = match.group(1).upper()
-
+        m = re.search(r"\bSKU\s*:\s*([A-Za-z0-9_-]+)", text, re.I)
+        if m:
+            sku = m.group(1).upper()
     if not sku:
         raise ValueError("Cannot identify SKU")
 
-    match = re.search(
-        r"\bSKU\s*:\s*"
-        + re.escape(sku)
-        + r"\s*(?:\|\s*)?"
-        + r"(XXL|XL|L|M|S)\s*,?\s*"
-        + r"(เก็บเงินปลายทาง|เงินโอน|โอนเงิน|โอน)",
-        text,
-        flags=re.IGNORECASE,
-    )
-
-    if not match:
-        raise ValueError(
-            f"Cannot identify size/payment: {sku}"
-        )
-
-    size = match.group(1).upper()
-    payment = match.group(2)
-
+    # Only examine text immediately after this selected SKU, not other options.
+    m = re.search(r"\bSKU\s*:\s*" + re.escape(sku) + r"\b", text, re.I)
+    if not m:
+        raise ValueError(f"Cannot locate selected SKU in page: {sku}")
+    segment = text[m.end():m.end() + 110]
+    payment_match = re.search(r"เก็บเงินปลายทาง|เงินโอน|โอนเงิน|โอน", segment)
+    if not payment_match:
+        raise ValueError(f"Cannot identify payment: {sku}")
+    payment = payment_match.group(0)
+    before_payment = segment[:payment_match.start()]
+    size_match = re.search(r"(?:XXL|XL|L|M|S|FREE\s*SIZE|FREESIZE)", before_payment, re.I)
+    size_buttons = [
+        b.get_text(" ", strip=True).upper()
+        for b in soup.select(".text-select-button-2")
+        if b.get_text(" ", strip=True).upper() in ("XXL", "XL", "L", "M", "S", "FREE SIZE", "F")
+    ]
+    if size_match:
+        size = size_match.group(0).upper().replace(" ", "")
+        if size == "FREESIZE":
+            size = "FREE SIZE"
+    elif not size_buttons:
+        size = "FREE SIZE"
+    else:
+        raise ValueError(f"Cannot identify size for sized product: {sku}")
     return sku, size, payment
 
 
-def size_availability(soup, size):
+def size_availability(soup, size, product=None):
+    if size == "FREE SIZE":
+        # Free-size items have no size button; use the selected offer's stock state.
+        offers = (product or {}).get("offers", {})
+        if isinstance(offers, list):
+            offers = offers[0] if offers else {}
+        if not isinstance(offers, dict):
+            offers = {}
+        status = str(offers.get("availability") or "").lower()
+        if "outofstock" in status or "soldout" in status:
+            return "out of stock"
+        if "instock" in status or "limitedavailability" in status:
+            return "in stock"
+        raise ValueError("Free Size: stock status not available in product schema")
+
     buttons = [
-        button
-        for button in soup.select(
-            ".text-select-button-2"
-        )
-        if button.get_text(
-            " ", strip=True
-        ).upper() == size
+        button for button in soup.select(".text-select-button-2")
+        if button.get_text(" ", strip=True).upper() == size
     ]
-
     if len(buttons) != 1:
-        raise ValueError(
-            f"Expected one size button for "
-            f"{size}, found {len(buttons)}"
-        )
-
+        raise ValueError(f"Expected one size button for {size}, found {len(buttons)}")
     button = buttons[0]
     classes = button.get("class", [])
-
     unavailable = (
         "disabled" in classes
         or button.has_attr("disabled")
         or button.get("aria-disabled") == "true"
     )
-
-    if unavailable:
-        return "out of stock"
-
-    return "in stock"
+    return "out of stock" if unavailable else "in stock"
 
 
 def parent_id(url):
@@ -361,7 +368,7 @@ def build_row(url, soup, product, sku, size):
     price = get_price(product)
 
     availability = size_availability(
-        soup, size
+        soup, size, product
     )
 
     return {
@@ -481,7 +488,7 @@ def main():
             )
 
         finally:
-            time.sleep(1.0)
+            time.sleep(0.4)
 
     result = list(rows.values())
 
