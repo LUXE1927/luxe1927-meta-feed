@@ -13,7 +13,7 @@ from bs4 import BeautifulSoup
 
 BASE = "https://www.luxe1927.com"
 SITEMAP = BASE + "/sitemap.xml"
-MAX_URLS = 100
+MAX_URLS = 0
 
 SIZES = ("XXL", "XL", "L", "M", "S")
 
