@@ -327,5 +327,57 @@ def main():
     print("Created products.csv successfully")
 
 
+
 if __name__ == "__main__":
-    main()
+    test_url = (
+        "https://www.luxe1927.com/product/49087-60434/"
+        "mutapbk-noir-silk-majesty-maxi-dress-ดำ"
+    )
+
+    response = session.get(test_url, timeout=30)
+    response.raise_for_status()
+
+    soup = BeautifulSoup(response.text, "html.parser")
+
+    print("=== HTML SKU DIAGNOSTIC ===")
+    print("HTTP status:", response.status_code)
+    print("HTML length:", len(response.text))
+
+    text = soup.get_text(" ", strip=True)
+
+    for keyword in [
+        "SKU", "MUTAPBKCM",
+        "เก็บเงินปลายทาง", "เงินโอน"
+    ]:
+        print(f"\nKEYWORD: {keyword}")
+        matches = list(re.finditer(
+            re.escape(keyword), text, re.IGNORECASE
+        ))
+
+        print("Occurrences:", len(matches))
+
+        for match in matches[:3]:
+            start = max(0, match.start() - 100)
+            end = min(len(text), match.end() + 150)
+            print(repr(text[start:end]))
+
+    print("\n=== SIZE BUTTONS ===")
+
+    for button in soup.select(".text-select-button-2"):
+        print({
+            "text": button.get_text(" ", strip=True),
+            "classes": button.get("class", []),
+            "disabled": button.has_attr("disabled")
+        })
+
+    print("\n=== SCHEMA SKU ===")
+
+    product = product_schema(soup)
+    print("sku:", product.get("sku"))
+    print("name:", product.get("name"))
+    print("offers:", json.dumps(
+        product.get("offers", {}),
+        ensure_ascii=False
+    )[:1500])
+
+    print("\nDIAGNOSTIC COMPLETE")
