@@ -2,46 +2,34 @@
 import requests
 from bs4 import BeautifulSoup
 
-URL = (
-    "https://www.luxe1927.com/product/54944/"
-    "mxsx-draped-metallic-long-sleeve-maxi-dress-ชมพู"
-)
+url = "https://www.luxe1927.com/product/54944/mxsx-draped-metallic-long-sleeve-maxi-dress-%E0%B8%8A%E0%B8%A1%E0%B8%9E%E0%B8%B9"
 
-SIZES = {"S", "M", "L", "XL", "XXL"}
-
-response = requests.get(
-    URL,
-    headers={"User-Agent": "Mozilla/5.0"},
-    timeout=30,
-)
+response = requests.get(url, timeout=30)
 response.raise_for_status()
 
-soup = BeautifulSoup(response.text, "lxml")
+soup = BeautifulSoup(response.text, "html.parser")
 
-print("LUXE1927 - Product Stock Test")
-print("HTTP status:", response.status_code)
-print("Page title:", soup.title.get_text(strip=True) if soup.title else "N/A")
+print("=== MXSX PINK STOCK TEST ===")
+print("HTTP:", response.status_code)
 
-buttons = soup.select(".text-select-button-2")
-found = {}
+sizes = {"S", "M", "L", "XL", "XXL"}
 
-for button in buttons:
+for button in soup.select(".text-select-button-2"):
     size = button.get_text(" ", strip=True).upper()
 
-    if size not in SIZES:
+    if size not in sizes:
         continue
 
-    sold_out = "disabled" in button.get("class", [])
+    classes = button.get("class", [])
+    disabled = (
+        "disabled" in classes
+        or button.has_attr("disabled")
+    )
 
-    found[size] = "out of stock" if sold_out else "in stock"
+    print(
+        f"SIZE {size}: "
+        f"{'OUT OF STOCK' if disabled else 'IN STOCK'} "
+        f"| classes={classes}"
+    )
 
-for size in ["S", "M", "L", "XL", "XXL"]:
-    print(f"{size}: {found.get(size, 'NOT FOUND')}")
-
-if not found:
-    print("RESULT: Size buttons not found in HTML.")
-    print("A browser-rendering method may be required.")
-elif len(found) != len(SIZES):
-    print("RESULT: Some sizes were not found. Needs investigation.")
-else:
-    print("RESULT: All five sizes found in HTML.")
+print("=== TEST COMPLETE ===")
