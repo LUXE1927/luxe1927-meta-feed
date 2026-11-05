@@ -13,8 +13,6 @@ from bs4 import BeautifulSoup
 
 BASE = "https://www.luxe1927.com"
 SITEMAP = BASE + "/sitemap.xml"
-
-# Test only the first 100 product URLs
 MAX_URLS = 100
 
 SIZES = ("XXL", "XL", "L", "M", "S")
@@ -51,6 +49,7 @@ def product_urls():
     root = ET.fromstring(response.content)
 
     urls = []
+
     for node in root.iter():
         if node.tag.rsplit("}", 1)[-1] != "loc":
             continue
@@ -70,7 +69,7 @@ def product_urls():
     print(f"URLs in sitemap: {len(urls)}", flush=True)
 
     if not urls:
-        raise RuntimeError("No product URLs found in sitemap.")
+        raise RuntimeError("No product URLs found in sitemap")
 
     return urls[:MAX_URLS] if MAX_URLS else urls
 
@@ -102,7 +101,9 @@ def product_schema(soup):
         'script[type="application/ld+json"]'
     ):
         try:
-            data = json.loads(script.string or script.get_text())
+            data = json.loads(
+                script.string or script.get_text()
+            )
         except (ValueError, TypeError):
             continue
 
@@ -113,6 +114,83 @@ def product_schema(soup):
     return {}
 
 
+def clean_text(value):
+    if isinstance(value, dict):
+        value = value.get("@value") or ""
+
+    if isinstance(value, list):
+        value = " ".join(map(str, value))
+
+    return re.sub(
+        r"\s+", " ", str(value or "")
+    ).strip()
+
+
+def valid_description(value, title):
+    value = clean_text(value)
+
+    if not value:
+        return False
+
+    if len(value) < 30:
+        return False
+
+    if value.strip().lower() == title.strip().lower():
+        return False
+
+    promotional_only = [
+        r"^(?:โอน|เงินโอน|โอนเงิน)\s*ลด\s*[\d,.]+\s*[.-]*$",
+        r"^เก็บเงินปลายทาง$",
+    ]
+
+    for pattern in promotional_only:
+        if re.fullmatch(pattern, value, re.IGNORECASE):
+            return False
+
+    return True
+
+
+def get_description(product, soup, title):
+    candidates = []
+
+    # First choice: structured product description
+    candidates.append(product.get("description"))
+
+    # Second choice: social sharing description
+    for selector in (
+        'meta[property="og:description"]',
+        'meta[name="description"]',
+        'meta[name="twitter:description"]',
+    ):
+        tag = soup.select_one(selector)
+
+        if tag:
+            candidates.append(tag.get("content"))
+
+    # Third choice: visible product-detail sections
+    for selector in (
+        '[itemprop="description"]',
+        '.product-description',
+        '.product-detail-description',
+        '.product-details-description',
+        '.product-description-content',
+        '.tab-description',
+    ):
+        for element in soup.select(selector)[:2]:
+            candidates.append(
+                element.get_text(" ", strip=True)
+            )
+
+    for candidate in candidates:
+        value = clean_text(candidate)
+
+        if valid_description(value, title):
+            return value[:5000]
+
+    # Safe fallback: descriptive product name, not payment text
+    return f"{title} | ชุดเดรสแฟชั่นผู้หญิง แบรนด์ LUXE"
+
+
 def get_image(product, soup):
     image = product.get("image")
 
@@ -120,10 +198,15 @@ def get_image(product, soup):
         image = image[0] if image else None
 
     if isinstance(image, dict):
-        image = image.get("url") or image.get("contentUrl")
+        image = (
+            image.get("url")
+            or image.get("contentUrl")
+        )
 
     if not image:
-        tag = soup.find("meta", property="og:image")
+        tag = soup.find(
+            "meta", property="og:image"
+        )
         if tag:
             image = tag.get("content")
 
@@ -135,6 +218,7 @@ def get_image(product, soup):
 
 def get_price(product):
     offers = product.get("offers", {})
+
     if isinstance(offers, list):
         offers = offers[0] if offers else {}
 
@@ -146,11 +230,18 @@ def get_price(product):
     if price is None:
         raise ValueError("Missing product price")
 
-    currency = offers.get("priceCurrency", "THB")
-    if currency != "THB":
-        raise ValueError(f"Unexpected currency: {currency}")
+    currency = offers.get(
+        "priceCurrency", "THB"
+    )
 
-    value = float(str(price).replace(",", ""))
+    if currency != "THB":
+        raise ValueError(
+            f"Unexpected currency: {currency}"
+        )
+
+    value = float(
+        str(price).replace(",", "")
+    )
 
     if value <= 0:
         raise ValueError("Invalid product price")
@@ -159,17 +250,21 @@ def get_price(product):
 
 
 def selected_variant(soup, product):
-    sku = str(product.get("sku") or "").strip().upper()
-    text = soup.get_text(" ", strip=True)
+    sku = str(
+        product.get("sku") or ""
+    ).strip().upper()
 
-    # Typical site text:
-    # SKU : MUTAPBKCM M, เก็บเงินปลายทาง
+    text = soup.get_text(
+        " ", strip=True
+    )
+
     if not sku:
         match = re.search(
             r"\bSKU\s*:\s*([A-Za-z0-9_-]+)",
             text,
             flags=re.IGNORECASE,
         )
+
         if match:
             sku = match.group(1).upper()
 
@@ -177,7 +272,8 @@ def selected_variant(soup, product):
         raise ValueError("Cannot identify SKU")
 
     match = re.search(
-        r"\bSKU\s*:\s*" + re.escape(sku)
+        r"\bSKU\s*:\s*"
+        + re.escape(sku)
         + r"\s*(?:\|\s*)?"
         + r"(XXL|XL|L|M|S)\s*,?\s*"
         + r"(เก็บเงินปลายทาง|เงินโอน|โอนเงิน|โอน)",
@@ -187,7 +283,7 @@ def selected_variant(soup, product):
 
     if not match:
         raise ValueError(
-            f"Cannot identify selected size/payment for SKU {sku}"
+            f"Cannot identify size/payment: {sku}"
         )
 
     size = match.group(1).upper()
@@ -199,14 +295,18 @@ def selected_variant(soup, product):
 def size_availability(soup, size):
     buttons = [
         button
-        for button in soup.select(".text-select-button-2")
-        if button.get_text(" ", strip=True).upper() == size
+        for button in soup.select(
+            ".text-select-button-2"
+        )
+        if button.get_text(
+            " ", strip=True
+        ).upper() == size
     ]
 
     if len(buttons) != 1:
         raise ValueError(
-            f"Expected one size button for {size}, "
-            f"found {len(buttons)}"
+            f"Expected one size button for "
+            f"{size}, found {len(buttons)}"
         )
 
     button = buttons[0]
@@ -218,7 +318,10 @@ def size_availability(soup, size):
         or button.get("aria-disabled") == "true"
     )
 
-    return "out of stock" if unavailable else "in stock"
+    if unavailable:
+        return "out of stock"
+
+    return "in stock"
 
 
 def parent_id(url):
@@ -228,35 +331,38 @@ def parent_id(url):
     )
 
     if not match:
-        raise ValueError("Cannot identify parent product ID")
+        raise ValueError(
+            "Cannot identify parent product ID"
+        )
 
     return match.group(1)
-
-
-def clean_text(value):
-    if isinstance(value, dict):
-        value = value.get("@value") or ""
-
-    if isinstance(value, list):
-        value = " ".join(map(str, value))
-
-    return re.sub(r"\s+", " ", str(value or "")).strip()
 
 
 def build_row(url, soup, product, sku, size):
     group = parent_id(url)
 
-    name = clean_text(product.get("name"))
+    name = clean_text(
+        product.get("name")
+    )
+
     if not name:
-        raise ValueError("Missing product name")
+        raise ValueError(
+            "Missing product name"
+        )
 
-    description = clean_text(product.get("description"))
-    if not description:
-        description = name
+    description = get_description(
+        product, soup, name
+    )
 
-    image = get_image(product, soup)
+    image = get_image(
+        product, soup
+    )
+
     price = get_price(product)
-    availability = size_availability(soup, size)
+
+    availability = size_availability(
+        soup, size
+    )
 
     return {
         "id": f"LUXE-{group}-{size}",
@@ -280,15 +386,22 @@ def main():
     problems = []
     ignored = 0
     skipped_404 = []
+    fallback_descriptions = 0
 
     for index, url in enumerate(urls, 1):
         try:
             response = fetch(url)
-            soup = BeautifulSoup(response.text, "lxml")
+
+            soup = BeautifulSoup(
+                response.text, "lxml"
+            )
+
             product = product_schema(soup)
 
             if not product:
-                raise ValueError("Product schema not found")
+                raise ValueError(
+                    "Product schema not found"
+                )
 
             sku, size, payment = selected_variant(
                 soup, product
@@ -327,6 +440,11 @@ def main():
 
             rows[item_id] = row
 
+            if row["description"].endswith(
+                "ชุดเดรสแฟชั่นผู้หญิง แบรนด์ LUXE"
+            ):
+                fallback_descriptions += 1
+
             print(
                 f"[{index}] OK: {item_id} "
                 f"{row['price']} "
@@ -341,12 +459,14 @@ def main():
                 and exc.response.status_code == 404
             ):
                 skipped_404.append(url)
+
                 print(
                     f"[{index}] SKIPPED 404: {url}",
                     flush=True,
                 )
             else:
                 problems.append((url, str(exc)))
+
                 print(
                     f"[{index}] REVIEW: {exc}",
                     flush=True,
@@ -354,6 +474,7 @@ def main():
 
         except Exception as exc:
             problems.append((url, str(exc)))
+
             print(
                 f"[{index}] REVIEW: {exc}",
                 flush=True,
@@ -368,6 +489,10 @@ def main():
     print(f"Transfer options ignored: {ignored}")
     print(f"Skipped 404 URLs: {len(skipped_404)}")
     print(f"URLs needing review: {len(problems)}")
+    print(
+        f"Fallback descriptions: "
+        f"{fallback_descriptions}"
+    )
 
     for url in skipped_404:
         print(f"SKIPPED 404: {url}")
@@ -376,7 +501,9 @@ def main():
         print(f"REVIEW: {url} | {issue}")
 
     if not result:
-        raise RuntimeError("No validated products found.")
+        raise RuntimeError(
+            "No validated products found"
+        )
 
     if problems:
         raise RuntimeError(
@@ -385,10 +512,13 @@ def main():
         )
 
     groups = Counter(
-        row["item_group_id"] for row in result
+        row["item_group_id"]
+        for row in result
     )
 
-    print(f"Product groups: {len(groups)}")
+    print(
+        f"Product groups: {len(groups)}"
+    )
 
     with open(
         "products.csv",
@@ -400,6 +530,7 @@ def main():
             file,
             fieldnames=FIELDS,
         )
+
         writer.writeheader()
         writer.writerows(result)
 
