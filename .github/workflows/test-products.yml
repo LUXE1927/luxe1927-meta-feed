@@ -25,7 +25,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Test product data
-        run: python test_products.py
+       run: python build_feed.py
 
       - name: Upload Meta Product Feed
         uses: actions/upload-artifact@v4
