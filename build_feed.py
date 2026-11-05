@@ -105,9 +105,33 @@ def normal_price(product):
         return None
 
 
+
 def selected_variant(soup):
-    # Read the visible SKU line, including the selected
-    # size and payment method.
+    product = product_schema(soup)
+    text = soup.get_text(" ", strip=True)
+
+    match = re.search(
+        r"\bSKU\s*:\s*([A-Za-z0-9_-]+)\s*(?:\|\s*)?"
+        r"(XXL|XL|L|M|S)\s*,\s*"
+        r"(เก็บเงินปลายทาง|เงินโอน|โอนเงิน|โอน)",
+        text,
+        flags=re.IGNORECASE
+    )
+
+    if not match:
+        return None
+
+    sku = match.group(1).upper()
+    size = match.group(2).upper()
+    payment = match.group(3)
+
+    schema_sku = str(product.get("sku") or "").upper()
+
+    if schema_sku != sku:
+        raise ValueError("SKU mismatch between page and schema")
+
+    return sku, size, payment
+
     text = soup.get_text(" ", strip=True)
 
     match = re.search(
