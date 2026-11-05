@@ -405,3 +405,6 @@ if __name__ == "__main__":
     )[:1500])
 
     print("\nDIAGNOSTIC COMPLETE")
+
+if __name__ == "__main__":
+    main()
