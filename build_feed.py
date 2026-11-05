@@ -4,6 +4,7 @@ import json
 import re
 import time
 import xml.etree.ElementTree as ET
+from collections import Counter
 from urllib.parse import urljoin, urlparse
 
 import requests
@@ -11,13 +12,9 @@ from bs4 import BeautifulSoup
 
 BASE = "https://www.luxe1927.com"
 SITEMAP = BASE + "/sitemap.xml"
-MAX_PRODUCTS = 30
-SIZES = {"S", "M", "L", "XL", "XXL"}
+MAX_URLS = 30  # ทดสอบก่อน ยังไม่เปิดทั้งร้าน
 
-session = requests.Session()
-session.headers.update({
-    "User-Agent": "Mozilla/5.0 (compatible; LUXE1927Feed/1.0)"
-})
+SIZES = ("XXL", "XL", "L", "M", "S")
 
 FIELDS = [
     "id", "item_group_id", "title", "description",
@@ -25,23 +22,28 @@ FIELDS = [
     "image_link", "brand", "size"
 ]
 
+session = requests.Session()
+session.headers.update({
+    "User-Agent": "Mozilla/5.0 (compatible; LUXE1927Feed/1.0)"
+})
 
-def get_sitemap_urls():
+
+def sitemap_urls():
     response = session.get(SITEMAP, timeout=40)
     response.raise_for_status()
 
     root = ET.fromstring(response.content)
     urls = []
 
-    for element in root.iter():
-        if element.tag.split("}")[-1] != "loc":
+    for node in root.iter():
+        if node.tag.split("}")[-1] != "loc":
             continue
 
-        url = (element.text or "").strip()
+        url = (node.text or "").strip()
         parsed = urlparse(url)
 
         if (
-            parsed.netloc in {"luxe1927.com", "www.luxe1927.com"}
+            parsed.netloc in ("luxe1927.com", "www.luxe1927.com")
             and parsed.path.startswith("/product/")
         ):
             urls.append(url)
@@ -49,7 +51,7 @@ def get_sitemap_urls():
     return list(dict.fromkeys(urls))
 
 
-def get_schema(soup):
+def product_schema(soup):
     def walk(obj):
         if isinstance(obj, list):
             for value in obj:
@@ -68,20 +70,21 @@ def get_schema(soup):
     for script in soup.select('script[type="application/ld+json"]'):
         try:
             data = json.loads(script.string or script.get_text())
-            for product in walk(data):
-                return product
         except (ValueError, TypeError):
             continue
+
+        for product in walk(data):
+            return product
 
     return {}
 
 
-def get_meta(soup, key, attribute="property"):
-    element = soup.find("meta", attrs={attribute: key})
-    return element.get("content", "").strip() if element else ""
+def meta(soup, key, attr="property"):
+    tag = soup.find("meta", attrs={attr: key})
+    return tag.get("content", "").strip() if tag else ""
 
 
-def get_price(product):
+def normal_price(product):
     offers = product.get("offers", {})
 
     if isinstance(offers, list):
@@ -93,7 +96,7 @@ def get_price(product):
     if offers.get("priceCurrency", "THB") != "THB":
         return None
 
-    price = offers.get("highPrice") or offers.get("price")
+    price = offers.get("price") or offers.get("highPrice")
 
     try:
         value = float(str(price).replace(",", ""))
@@ -102,75 +105,115 @@ def get_price(product):
         return None
 
 
-def get_description(soup, product, title):
-    candidates = [
-        get_meta(soup, "description", "name"),
-        get_meta(soup, "og:description"),
+def selected_variant(soup):
+    # Read the visible SKU line, including the selected
+    # size and payment method.
+    text = soup.get_text(" ", strip=True)
+
+    match = re.search(
+        r"\bSKU\s*:\s*([A-Za-z0-9_-]+)\s*\|\s*"
+        r"(XXL|XL|L|M|S)\s*,\s*"
+        r"(เก็บเงินปลายทาง|เงินโอน|โอนเงิน|โอน)",
+        text,
+        flags=re.IGNORECASE
+    )
+
+    if not match:
+        return None
+
+    sku = match.group(1).upper()
+    size = match.group(2).upper()
+    payment = match.group(3)
+
+    return sku, size, payment
+
+
+def size_availability(soup, size):
+    buttons = [
+        button
+        for button in soup.select(".text-select-button-2")
+        if button.get_text(" ", strip=True).upper() == size
+    ]
+
+    # Avoid guessing if size buttons are missing or duplicated.
+    if len(buttons) != 1:
+        return None
+
+    button = buttons[0]
+    classes = button.get("class", [])
+
+    disabled = (
+        "disabled" in classes
+        or button.has_attr("disabled")
+        or button.get("aria-disabled") == "true"
+    )
+
+    return "out of stock" if disabled else "in stock"
+
+
+def description(soup, product, title):
+    values = [
+        meta(soup, "description", "name"),
+        meta(soup, "og:description"),
         product.get("description", "")
     ]
 
-    for candidate in candidates:
-        if not isinstance(candidate, str):
+    for value in values:
+        if not isinstance(value, str):
             continue
 
-        description = BeautifulSoup(
-            candidate, "html.parser"
+        clean = BeautifulSoup(
+            value, "html.parser"
         ).get_text(" ", strip=True)
 
-        description = re.sub(r"\s+", " ", description)
+        clean = re.sub(r"\s+", " ", clean)
 
-        if not description:
+        if len(clean) < 25:
             continue
 
         if re.fullmatch(
-            r"(โอน|เก็บเงินปลายทาง|ลด|ส่วนลด|COD|[\d\s.,฿-])+",
-            description,
+            r"(โอน|เงินโอน|ลด|ส่วนลด|COD|[\d\s.,฿-])+",
+            clean,
             flags=re.IGNORECASE
         ):
             continue
 
-        if len(description) >= 25:
-            return description[:5000]
+        return clean[:5000]
 
     return title
 
 
-def get_sizes(soup):
-    sizes = {}
-
-    for element in soup.select(".text-select-button-2"):
-        size = element.get_text(" ", strip=True).upper()
-
-        if size not in SIZES:
-            continue
-
-        classes = element.get("class", [])
-        disabled = (
-            "disabled" in classes
-            or element.has_attr("disabled")
-            or element.get("aria-disabled") == "true"
-        )
-
-        sizes[size] = (
-            "out of stock" if disabled else "in stock"
-        )
-
-    return sizes
-
-
-def read_product(url):
+def read_variant(url):
     response = session.get(url, timeout=30)
     response.raise_for_status()
 
     soup = BeautifulSoup(response.text, "html.parser")
-    product = get_schema(soup)
+    product = product_schema(soup)
 
     if not product:
         raise ValueError("Product schema missing")
 
+    variant = selected_variant(soup)
+
+    if not variant:
+        raise ValueError("Cannot identify selected SKU/size/payment")
+
+    sku, size, payment = variant
+
+    # Only use the regular COD price.
+    if payment != "เก็บเงินปลายทาง":
+        return None, "transfer option ignored"
+
+    match = re.search(r"/product/(\d+)(?:-\d+)?", url)
+
+    if not match:
+        raise ValueError("Parent product ID missing")
+
+    parent_id = match.group(1)
+
     title = str(product.get("name") or "").strip()
     if not title:
-        title = get_meta(soup, "og:title")
+        title = meta(soup, "og:title")
 
     image = product.get("image")
 
@@ -181,84 +224,97 @@ def read_product(url):
         image = image.get("url") or image.get("contentUrl")
 
     if not isinstance(image, str) or not image:
-        image = get_meta(soup, "og:image")
+        image = meta(soup, "og:image")
 
     image = urljoin(url, image) if image else ""
 
-    price = get_price(product)
-    sizes = get_sizes(soup)
+    price = normal_price(product)
+    availability = size_availability(soup, size)
 
-    # Keep both numeric components of MakeWebEasy IDs.
-    match = re.search(r"/product/(\d+(?:-\d+)?)", url)
+    if not title or not image or not price:
+        raise ValueError("Missing title, image or price")
 
-    if not match:
-        raise ValueError("Product ID missing")
+    if availability is None:
+        raise ValueError("Cannot confirm size availability")
 
-    product_id = match.group(1)
+    row = {
+        "id": f"LUXE-{parent_id}-{size}",
+        "item_group_id": f"LUXE-{parent_id}",
+        "title": f"{title} - {size}",
+        "description": description(soup, product, title),
+        "availability": availability,
+        "condition": "new",
+        "price": price,
+        "link": url,
+        "image_link": image,
+        "brand": "LUXE",
+        "size": size
+    }
 
-    if not title or not image or not price or not sizes:
-        raise ValueError("Incomplete product data")
-
-    description = get_description(soup, product, title)
-
-    rows = []
-
-    for size, availability in sizes.items():
-        rows.append({
-            "id": f"LUXE-{product_id}-{size}",
-            "item_group_id": f"LUXE-{product_id}",
-            "title": f"{title} - {size}",
-            "description": description,
-            "availability": availability,
-            "condition": "new",
-            "price": price,
-            "link": url,
-            "image_link": image,
-            "brand": "LUXE",
-            "size": size
-        })
-
-    return rows
+    return row, f"SKU={sku}"
 
 
 def main():
-    urls = get_sitemap_urls()
-    print(f"Product URLs in sitemap: {len(urls)}")
+    urls = sitemap_urls()
+    print(f"URLs in sitemap: {len(urls)}")
 
-    rows_by_id = {}
-    skipped = []
+    rows = {}
+    problems = []
+    ignored = 0
 
-    for index, url in enumerate(urls[:MAX_PRODUCTS], 1):
+    for index, url in enumerate(urls[:MAX_URLS], 1):
         try:
-            product_rows = read_product(url)
+            row, note = read_variant(url)
 
-            for row in product_rows:
-                # Never output duplicate IDs.
-                if row["id"] in rows_by_id:
-                    previous = rows_by_id[row["id"]]
+            if row is None:
+                ignored += 1
+                print(f"[{index}] IGNORED: {note}")
+                continue
 
-                    if previous != row:
-                        raise ValueError(
-                            f"Conflicting duplicate ID: {row['id']}"
-                        )
-                else:
-                    rows_by_id[row["id"]] = row
+            item_id = row["id"]
 
+            if item_id in rows:
+                if rows[item_id] != row:
+                    problems.append(
+                        (url, f"Conflicting duplicate {item_id}")
+                    )
+                continue
+
+            rows[item_id] = row
             print(
-                f"[{index}] OK: {url} "
-                f"({len(product_rows)} sizes)"
+                f"[{index}] OK: {item_id} "
+                f"{row['price']} {row['availability']} {note}"
             )
 
         except Exception as exc:
-            skipped.append((url, str(exc)))
-            print(f"[{index}] SKIPPED: {url} - {exc}")
+            problems.append((url, str(exc)))
+            print(f"[{index}] REVIEW: {exc}")
 
-        time.sleep(0.3)
+        finally:
+            time.sleep(0.3)
 
-    rows = list(rows_by_id.values())
+    result = list(rows.values())
 
-    if not rows:
-        raise RuntimeError("No valid products found")
+    print(f"Unique items: {len(result)}")
+    print(f"Transfer options ignored: {ignored}")
+    print(f"URLs needing review: {len(problems)}")
+
+    for url, issue in problems[:20]:
+        print(f"REVIEW: {url} | {issue}")
+
+    if not result:
+        raise RuntimeError(
+            "No validated products. CSV was not created."
+        )
+
+    if problems:
+        raise RuntimeError(
+            "Some variants need review. "
+            "Feed withheld to prevent incorrect catalog data."
+        )
+
+    counts = Counter(row["item_group_id"] for row in result)
+    print(f"Product groups: {len(counts)}")
 
     with open(
         "products.csv", "w",
@@ -266,15 +322,9 @@ def main():
     ) as file:
         writer = csv.DictWriter(file, fieldnames=FIELDS)
         writer.writeheader()
-        writer.writerows(rows)
+        writer.writerows(result)
 
-    print(f"Unique CSV rows: {len(rows)}")
-    print(f"Unique groups: {len(set(r['item_group_id'] for r in rows))}")
-    print(f"Skipped URLs: {len(skipped)}")
-    print("Created products.csv")
-
-    for url, error in skipped[:15]:
-        print(f"REVIEW: {url} - {error}")
+    print("Created products.csv successfully")
 
 
 if __name__ == "__main__":
