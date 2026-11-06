@@ -20,4 +20,4 @@ jobs:
         run: pip install requests beautifulsoup4
 
       - name: Test API
-        run: python test_mxsb2_api.py
+        run: python test_mxsb2_api_v2.py
