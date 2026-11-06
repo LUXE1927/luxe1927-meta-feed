@@ -15,7 +15,7 @@ from bs4 import BeautifulSoup
 
 BASE = "https://www.luxe1927.com"
 SITEMAP = BASE + "/sitemap.xml"
-MAX_URLS = 30  # Diagnostic batch; set to 0 only after a successful test
+MAX_URLS = 0  # Diagnostic batch; set to 0 only after a successful test
 
 SIZES = ("XXL", "XL", "L", "M", "S", "FREE SIZE")
 
