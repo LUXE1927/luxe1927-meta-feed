@@ -77,7 +77,35 @@ def product_urls():
 
         if "/product/" in url:
             urls.append(url)
+    # Discover product links from category pages
+    category_queue = [BASE + "/category"]
+    visited_categories = set()
 
+    while category_queue and len(visited_categories) < 100:
+        category_url = category_queue.pop(0)
+        if category_url in visited_categories:
+            continue
+        visited_categories.add(category_url)
+
+        try:
+            page = fetch(category_url)
+            soup = BeautifulSoup(page.text, "html.parser")
+        except requests.RequestException as exc:
+            print(f"Category fetch failed: {category_url}: {exc}", flush=True)
+            continue
+
+        for link in soup.select("a[href]"):
+            href = urljoin(category_url, link.get("href", ""))
+            parsed = urlparse(href)
+
+            if parsed.netloc not in ("www.luxe1927.com", "luxe1927.com"):
+                continue
+
+            if parsed.path.startswith("/product/"):
+                urls.append(href.split("#")[0].split("?")[0])
+            elif parsed.path.startswith("/category"):
+                if href not in visited_categories and href not in category_queue:
+                    category_queue.append(href)
     urls = list(dict.fromkeys(urls))
     print(f"URLs in sitemap: {len(urls)}", flush=True)
 
