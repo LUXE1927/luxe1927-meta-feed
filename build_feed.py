@@ -112,6 +112,29 @@ def product_urls():
     for u in mxsb2_urls:
         print(f"MXSB2 URL: {u}", flush=True)
     urls = list(dict.fromkeys(urls))
+    from collections import defaultdict
+
+product_urls_by_id = defaultdict(list)
+
+for url in urls:
+    match = re.search(r"/product/(\d+)(?:-(\d+))?/", url)
+    if match:
+        product_urls_by_id[match.group(1)].append(url)
+
+for product_id, links in product_urls_by_id.items():
+    main_links = [
+        u for u in links
+        if re.search(rf"/product/{product_id}/", u)
+    ]
+    variant_links = [
+        u for u in links
+        if re.search(rf"/product/{product_id}-\d+/", u)
+    ]
+    if main_links and not variant_links:
+        print(
+            f"NEEDS VARIANT DISCOVERY: product {product_id}",
+            flush=True
+        )
     print(f"URLs in sitemap: {len(urls)}", flush=True)
 
     if not urls:
