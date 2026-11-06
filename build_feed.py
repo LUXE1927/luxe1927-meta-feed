@@ -15,7 +15,7 @@ from bs4 import BeautifulSoup
 
 BASE = "https://www.luxe1927.com"
 SITEMAP = BASE + "/sitemap.xml"
-MAX_URLS = 0
+MAX_URLS = 30  # Diagnostic batch; set to 0 only after a successful test
 
 SIZES = ("XXL", "XL", "L", "M", "S", "FREE SIZE")
 
@@ -263,27 +263,34 @@ def get_price(product):
 
 
 def selected_variant(soup, product):
-    """Read the currently selected SKU and payment; no size selector means Free Size."""
-    sku = str(product.get("sku") or "").strip().upper()
+    """Identify a variant without guessing when page data is ambiguous."""
+    sku = clean_text(product.get("sku")).upper()
     text = soup.get_text(" ", strip=True)
     if not sku:
-        m = re.search(r"\bSKU\s*:\s*([A-Za-z0-9_-]+)", text, re.I)
-        if m:
-            sku = m.group(1).upper()
+        match = re.search(r"\bSKU\s*[:：]\s*([A-Za-z0-9_-]+)", text, re.I)
+        if match:
+            sku = match.group(1).upper()
     if not sku:
-        raise ValueError("Cannot identify SKU")
+        raise ValueError("Cannot identify SKU in schema or visible page")
 
-    # Only examine text immediately after this selected SKU, not other options.
-    m = re.search(r"\bSKU\s*:\s*" + re.escape(sku) + r"\b", text, re.I)
-    if not m:
-        raise ValueError(f"Cannot locate selected SKU in page: {sku}")
-    segment = text[m.end():m.end() + 110]
-    payment_match = re.search(r"เก็บเงินปลายทาง|เงินโอน|โอนเงิน|โอน", segment)
+    # The page may have extra whitespace/markup between the SKU and options.
+    match = re.search(r"\bSKU\s*[:：]\s*" + re.escape(sku) + r"\b", text, re.I)
+    if not match:
+        raise ValueError(f"SKU exists in schema but is not visible beside options: {sku}")
+
+    # Use only the local SKU option text. Never select a payment option
+    # from a different product/variant elsewhere on the page.
+    segment = text[match.end():match.end() + 250]
+    payment_match = re.search(r"เก็บเงินปลายทาง|เงินโอน|โอนเงิน|โอนลด|โอน", segment)
     if not payment_match:
-        raise ValueError(f"Cannot identify payment: {sku}")
+        raise ValueError(f"Payment cannot be confirmed near SKU {sku}: {segment[:110]!r}")
     payment = payment_match.group(0)
+
     before_payment = segment[:payment_match.start()]
-    size_match = re.search(r"(?:XXL|XL|L|M|S|FREE\s*SIZE|FREESIZE)", before_payment, re.I)
+    size_match = re.search(
+        r"(?<![A-Za-z0-9])(?:XXL|XL|L|M|S|FREE\s*SIZE|FREESIZE)(?![A-Za-z0-9])",
+        before_payment, re.I,
+    )
     size_buttons = [
         b.get_text(" ", strip=True).upper()
         for b in soup.select(".text-select-button-2")
@@ -293,11 +300,28 @@ def selected_variant(soup, product):
         size = size_match.group(0).upper().replace(" ", "")
         if size == "FREESIZE":
             size = "FREE SIZE"
+        if size_buttons and size not in size_buttons:
+            raise ValueError(f"SKU size {size} not in page size options: {sku}")
     elif not size_buttons:
         size = "FREE SIZE"
     else:
-        raise ValueError(f"Cannot identify size for sized product: {sku}")
+        raise ValueError(f"Cannot identify selected size for SKU {sku}: {before_payment[:90]!r}")
     return sku, size, payment
+
+
+def diagnostic(soup, product, url):
+    """Log small, non-sensitive snippets to reveal the site's real HTML layout."""
+    text = soup.get_text(" ", strip=True)
+    matches = list(re.finditer(r"\bSKU\b", text, re.I))
+    print(f"DIAGNOSTIC URL: {url}", flush=True)
+    print(f"DIAGNOSTIC schema SKU: {product.get('sku')!r}", flush=True)
+    print(f"DIAGNOSTIC SKU occurrences: {len(matches)}", flush=True)
+    for match in matches[:2]:
+        print(f"DIAGNOSTIC SKU context: {text[max(0, match.start()-60):match.end()+180]!r}", flush=True)
+    print("DIAGNOSTIC size buttons:", [
+        (b.get_text(" ", strip=True), b.get("class", []))
+        for b in soup.select(".text-select-button-2")[:8]
+    ], flush=True)
 
 
 def size_availability(soup, size, product=None):
@@ -394,8 +418,11 @@ def main():
     ignored = 0
     skipped_404 = []
     fallback_descriptions = 0
+    diagnostics_printed = 0
 
     for index, url in enumerate(urls, 1):
+        soup = None
+        product = None
         try:
             response = fetch(url)
 
@@ -480,6 +507,9 @@ def main():
                 )
 
         except Exception as exc:
+            if diagnostics_printed < 3 and soup is not None and isinstance(product, dict):
+                diagnostic(soup, product, url)
+                diagnostics_printed += 1
             problems.append((url, str(exc)))
 
             print(
