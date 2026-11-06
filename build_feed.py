@@ -15,7 +15,7 @@ from bs4 import BeautifulSoup
 
 BASE = "https://www.luxe1927.com"
 SITEMAP = BASE + "/sitemap.xml"
-MAX_URLS = 0  # Diagnostic batch; set to 0 only after a successful test
+MAX_URLS = 0  # Process all sitemap variant URLs
 
 SIZES = ("XXL", "XL", "L", "M", "S", "FREE SIZE")
 
@@ -58,88 +58,27 @@ def fetch(url):
 
 
 def product_urls():
+    """Restore the previously successful sitemap-based variant feed.
+
+    Category product landing pages are intentionally not included until
+    their actual variant URLs can be discovered and verified.
+    """
     response = fetch(SITEMAP)
     root = ET.fromstring(response.content)
-
     urls = []
-
     for node in root.iter():
         if node.tag.rsplit("}", 1)[-1] != "loc":
             continue
-
         url = (node.text or "").strip()
-
-        if urlparse(url).netloc not in (
-            "www.luxe1927.com",
-            "luxe1927.com",
-        ):
+        parsed = urlparse(url)
+        if parsed.netloc not in ("www.luxe1927.com", "luxe1927.com"):
             continue
-
-        if "/product/" in url:
+        if re.search(r"/product/\d+-\d+(?:/|$)", parsed.path):
             urls.append(url)
-    # Discover product links from category pages
-    category_queue = [BASE + "/category"]
-    visited_categories = set()
-
-    while category_queue and len(visited_categories) < 100:
-        category_url = category_queue.pop(0)
-        if category_url in visited_categories:
-            continue
-        visited_categories.add(category_url)
-
-        try:
-            page = fetch(category_url)
-            soup = BeautifulSoup(page.text, "html.parser")
-        except requests.RequestException as exc:
-            print(f"Category fetch failed: {category_url}: {exc}", flush=True)
-            continue
-
-        for link in soup.select("a[href]"):
-            href = urljoin(category_url, link.get("href", ""))
-            parsed = urlparse(href)
-
-            if parsed.netloc not in ("www.luxe1927.com", "luxe1927.com"):
-                continue
-
-            if parsed.path.startswith("/product/"):
-                urls.append(href.split("#")[0].split("?")[0])
-            elif parsed.path.startswith("/category"):
-                if href not in visited_categories and href not in category_queue:
-                    category_queue.append(href)
-                # Check whether MXSB2 is discovered
-    mxsb2_urls = [u for u in urls if "/product/57005" in u]
-    print(f"MXSB2 URLs found: {len(mxsb2_urls)}", flush=True)
-    for u in mxsb2_urls:
-        print(f"MXSB2 URL: {u}", flush=True)
     urls = list(dict.fromkeys(urls))
-    from collections import defaultdict
-
-product_urls_by_id = defaultdict(list)
-
-for url in urls:
-    match = re.search(r"/product/(\d+)(?:-(\d+))?/", url)
-    if match:
-        product_urls_by_id[match.group(1)].append(url)
-
-for product_id, links in product_urls_by_id.items():
-    main_links = [
-        u for u in links
-        if re.search(rf"/product/{product_id}/", u)
-    ]
-    variant_links = [
-        u for u in links
-        if re.search(rf"/product/{product_id}-\d+/", u)
-    ]
-    if main_links and not variant_links:
-        print(
-            f"NEEDS VARIANT DISCOVERY: product {product_id}",
-            flush=True
-        )
-    print(f"URLs in sitemap: {len(urls)}", flush=True)
-
+    print(f"Variant URLs in sitemap: {len(urls)}", flush=True)
     if not urls:
-        raise RuntimeError("No product URLs found in sitemap")
-
+        raise RuntimeError("No variant URLs found in sitemap")
     return urls[:MAX_URLS] if MAX_URLS else urls
 
 
