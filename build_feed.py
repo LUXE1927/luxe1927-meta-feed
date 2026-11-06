@@ -106,6 +106,11 @@ def product_urls():
             elif parsed.path.startswith("/category"):
                 if href not in visited_categories and href not in category_queue:
                     category_queue.append(href)
+                # Check whether MXSB2 is discovered
+    mxsb2_urls = [u for u in urls if "/product/57005" in u]
+    print(f"MXSB2 URLs found: {len(mxsb2_urls)}", flush=True)
+    for u in mxsb2_urls:
+        print(f"MXSB2 URL: {u}", flush=True)
     urls = list(dict.fromkeys(urls))
     print(f"URLs in sitemap: {len(urls)}", flush=True)
 
