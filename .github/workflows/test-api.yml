@@ -20,4 +20,4 @@ jobs:
         run: pip install requests beautifulsoup4
 
       - name: Test API
-        run: python test_mxsb2_api_v2.py
+        run: LUXE_TEST_DISCOVERY=1 python build_feed_api_candidate.py
