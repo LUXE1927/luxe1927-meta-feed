@@ -16,8 +16,8 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install requests
-        run: pip install requests beautifulsoup4
+      - name: Install dependencies
+        run: pip install requests beautifulsoup4 lxml
 
-      - name: Test API
-       run: LUXE_TEST_DISCOVERY=1 python build_feed_api_candidate_fixed.py
+      - name: Test MXSB2 discovery
+        run: LUXE_TEST_DISCOVERY=1 python build_feed_api_candidate_fixed.py
